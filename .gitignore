@@ -1,0 +1,7 @@
+.Rhistory
+.RData
+.Rproj.user/
+*.csv
+praesentation.html
+praesentation_files/
+.quarto/

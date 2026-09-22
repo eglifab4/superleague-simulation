@@ -1,0 +1,439 @@
+---
+title: "Super-League Simulation"
+format: revealjs
+author: "Andreas Minder, Noa Medved, Fabian Egli"
+editor: visual
+---
+
+```{r setup, include=FALSE}
+
+library(ggplot2)
+library(reshape2)
+
+#1) Team-Statistiken
+teams         <- c("YB", "Basel", "Servette", "Lugano", "St_Gallen",
+                   "Luzern", "Lausanne", "Zuerich", "GCZ", "Winterthur",
+                   "Sion", "Thun")
+tore_erzielt  <- c(181, 164, 162, 159, 163, 166, 142, 133, 110, 122, 132, 171)
+tore_kassiert <- c(134, 128, 138, 129, 127, 158, 149, 146, 156, 203, 151, 153)
+n_teams       <- length(teams)
+
+avg_tore      <- tore_erzielt  / 99
+avg_gegentore <- tore_kassiert / 99
+
+#2) Spielplan einmalig generieren
+build_spielplan <- function() {
+  heim <- integer(0)
+  ausw <- integer(0)
+  for (durchgang in 1:4) {
+    if (durchgang %% 2 == 1) {
+      for (i in 1:(n_teams - 1)) {
+        for (j in (i + 1):n_teams) {
+          heim <- c(heim, i); ausw <- c(ausw, j)
+        }
+      }
+    } else {
+      for (i in n_teams:2) {
+        for (j in (i - 1):1) {
+          heim <- c(heim, i); ausw <- c(ausw, j)
+        }
+      }
+    }
+  }
+  list(heim = heim, ausw = ausw)
+}
+
+sp       <- build_spielplan()
+heim_idx <- sp$heim
+ausw_idx <- sp$ausw
+n_spiele <- length(heim_idx)
+
+#3) Simulation einer Saison (mit Punkteverlauf)
+simuliere_saison <- function() {
+
+  punkte     <- integer(n_teams)
+  tordiff    <- integer(n_teams)
+  tore_plus  <- integer(n_teams)
+  letzte5    <- matrix(0L, nrow = n_teams, ncol = 5)
+  l5_count   <- integer(n_teams)
+
+  spiele_pro_team <- (n_spiele * 2) / n_teams
+  punkte_verlauf  <- matrix(0L, nrow = spiele_pro_team, ncol = n_teams,
+                            dimnames = list(NULL, teams))
+
+  rk_h   <- rpois(n_spiele, 0.159)
+  rk_a   <- rpois(n_spiele, 0.159)
+  tf_h   <- runif(n_spiele, 0.9, 1.3)
+  tf_a   <- runif(n_spiele, 0.8, 1.2)
+  roh    <- rnorm(n_spiele, 1, 0.0667)
+  wetter <- 1 - abs(round(roh / 0.05) * 0.05 - 1)
+
+  for (k in seq_len(n_spiele)) {
+    h <- heim_idx[k]; a <- ausw_idx[k]
+
+    if (l5_count[h] >= 5 && l5_count[a] >= 5) {
+      form_h <- 0.85 + (sum(letzte5[h, ]) / 15) * 0.30
+      form_a <- 0.85 + (sum(letzte5[a, ]) / 15) * 0.30
+    } else {
+      form_h <- 1; form_a <- 1
+    }
+
+    lam_h <- (avg_tore[h] + avg_gegentore[a]) / 2 *
+      0.9^rk_h[k] * form_h * wetter[k] * tf_h[k]
+    lam_a <- (avg_tore[a] + avg_gegentore[h]) / 2 *
+      0.9^rk_a[k] * form_a * wetter[k] * tf_a[k]
+
+    th <- rpois(1, lam_h)
+    ta <- rpois(1, lam_a)
+
+    if (th > ta) {
+      pkt_h <- 3L; pkt_a <- 0L
+    } else if (th < ta) {
+      pkt_h <- 0L; pkt_a <- 3L
+    } else {
+      pkt_h <- 1L; pkt_a <- 1L
+    }
+
+    punkte[h]    <- punkte[h]    + pkt_h
+    punkte[a]    <- punkte[a]    + pkt_a
+    tordiff[h]   <- tordiff[h]   + (th - ta)
+    tordiff[a]   <- tordiff[a]   + (ta - th)
+    tore_plus[h] <- tore_plus[h] + th
+    tore_plus[a] <- tore_plus[a] + ta
+
+    pos_h <- (l5_count[h] %% 5) + 1L
+    pos_a <- (l5_count[a] %% 5) + 1L
+    letzte5[h, pos_h] <- pkt_h
+    letzte5[a, pos_a] <- pkt_a
+    l5_count[h] <- l5_count[h] + 1L
+    l5_count[a] <- l5_count[a] + 1L
+    punkte_verlauf[l5_count[h], h] <- punkte[h]
+    punkte_verlauf[l5_count[a], a] <- punkte[a]
+  }
+
+  o <- order(-punkte, -tordiff, -tore_plus)
+  rang <- integer(n_teams)
+  rang[o] <- seq_len(n_teams)
+
+  list(punkte = punkte, rang = rang, punkte_verlauf = punkte_verlauf)
+}
+
+#4) Beispiel-Saison MIT Seed für Reproduzierbarkeit
+set.seed(42)
+beispiel <- simuliere_saison()
+
+#5) 10'000 Saisons simulieren (eigener Seed)
+set.seed(123)
+N <- 10000
+
+rang_matrix   <- matrix(0L, nrow = N, ncol = n_teams,
+                        dimnames = list(NULL, teams))
+punkte_matrix <- matrix(0L, nrow = N, ncol = n_teams,
+                        dimnames = list(NULL, teams))
+
+for (s in 1:N) {
+  res <- simuliere_saison()
+  punkte_matrix[s, ] <- res$punkte
+  rang_matrix[s, ]   <- res$rang
+}
+
+#6) Durchschnitts-Tabelle
+avg_punkte <- colMeans(punkte_matrix)
+avg_rang   <- colMeans(rang_matrix)
+
+durchschnitt <- data.frame(
+  team       = teams,
+  avg_punkte = round(avg_punkte, 2),
+  avg_rang   = round(avg_rang, 2)
+)
+durchschnitt <- durchschnitt[order(-durchschnitt$avg_punkte), ]
+rownames(durchschnitt) <- NULL
+durchschnitt$pos <- seq_len(n_teams)
+durchschnitt <- durchschnitt[, c("pos", "team", "avg_punkte", "avg_rang")]
+
+#7) Positions-Wahrscheinlichkeits-Matrix
+pos_wkt <- matrix(0, nrow = n_teams, ncol = n_teams,
+                  dimnames = list(teams, paste0("Pos_", 1:n_teams)))
+
+for (i in seq_len(n_teams)) {
+  for (p in seq_len(n_teams)) {
+    pos_wkt[i, p] <- mean(rang_matrix[, i] == p) * 100
+  }
+}
+
+pos_wkt_df <- as.data.frame(round(pos_wkt, 2))
+pos_wkt_df$team <- rownames(pos_wkt_df)
+pos_wkt_df <- pos_wkt_df[, c("team", paste0("Pos_", 1:n_teams))]
+pos_wkt_df <- pos_wkt_df[order(avg_rang), ]
+rownames(pos_wkt_df) <- NULL
+
+meister_wkt <- pos_wkt[, 1]
+abstieg_wkt <- pos_wkt[, 12]
+```
+
+## Worum geht es?
+
+-   Super-League-Saison simulieren
+
+<!-- -->
+
+-   Nach Abschluss der Saison beurteilen, wer die besten Gewinnchancen hat
+
+<!-- -->
+
+-   Andere Schlussfolgerungen aus der Simulation ziehen
+
+## Wie ist unsere stochastische Simulation aufgebaut?
+
+-   12 Super-League-Teams mit historischen Toren (erzielt & kassiert aus 99 Spielen)
+
+<!-- -->
+
+-   Spielplan mit 4 Durchgängen → 264 Spiele pro Saison (44 Spiele pro Team)
+
+-   Heimvorteil, Tagesform & Wetterfaktor beeinflussen die Torrate
+
+<!-- -->
+
+-   10'000 Saisons werden simuliert; Punkte & Rang werden pro Saison gespeichert
+
+## Verteilungen
+
+-   Tore pro Spiel: Poisson-verteilt mit teamspezifischer Erwartungsrate (λ)
+
+<!-- -->
+
+-   Rote Karten: Poisson-verteilt (λ = 0.159), reduzieren die Torrate um 10% pro Karte
+
+<!-- -->
+
+-   Tagesform (Heim/Auswärts): Uniform verteilt (U\[0.9, 1.3\] bzw. U\[0.8, 1.2\])
+
+-   Formfaktor: abhängig von den Punkten der letzten 5 Spiele (Wertebereich 0.85–1.15)
+
+## Team-Statistiken {.smaller}
+
+-   Tore erzielt & kassiert aus den **letzten 3 Saisons** (erste 33 Spieltage = 99 Spiele)
+
+-   Bei **Sion & Thun** weicht die Datenbasis ab: beide Teams waren zwischenzeitlich nicht in der Super League → Sion: Saisons 2024/25 + 2025/26 + 2022/23; Thun: Saisons 2025/26 + 2019/20 + 2018/19
+
+-   `avg_tore` & `avg_gegentore` pro Spiel dienen als teamspezifischer Erwartungswert λ
+
+```{r team-stats-show}
+#| echo: true
+#| eval: false
+teams         <- c("YB", "Basel", "Servette", "Lugano", "St_Gallen",
+                   "Luzern", "Lausanne", "Zuerich", "GCZ", "Winterthur",
+                   "Sion", "Thun")
+tore_erzielt  <- c(181, 164, 162, 159, 163, 166, 142, 133, 110, 122, 132, 171)
+tore_kassiert <- c(134, 128, 138, 129, 127, 158, 149, 146, 156, 203, 151, 153)
+
+avg_tore      <- tore_erzielt  / 99
+avg_gegentore <- tore_kassiert / 99
+```
+
+## Spielplan-Generierung {.smaller}
+
+-   4 Durchgänge → jedes Team spielt **44-mal** (22× Heim, 22× Auswärts), 264 Spiele total
+
+-   Ungerade Durchgänge: aufsteigend (i vs. j); gerade: absteigend → Heim/Auswärts-Wechsel
+
+-   Der Spielplan wird **einmal** generiert und für alle 10'000 Saisons wiederverwendet
+
+```{r spielplan-show}
+#| echo: true
+#| eval: false
+build_spielplan <- function() {
+  heim <- integer(0); ausw <- integer(0)
+  for (durchgang in 1:4) {
+    if (durchgang %% 2 == 1) {
+      for (i in 1:(n_teams - 1))
+        for (j in (i + 1):n_teams) { heim <- c(heim, i); ausw <- c(ausw, j) }
+    } else {
+      for (i in n_teams:2)
+        for (j in (i - 1):1) { heim <- c(heim, i); ausw <- c(ausw, j) }
+    }
+  }
+  list(heim = heim, ausw = ausw)
+}
+```
+
+## Simulation einer Saison {.smaller}
+
+-   λ kombiniert **eigene Angriffsstärke** und **gegnerische Abwehrschwäche**
+
+-   Bei mehr als 5 Spielen wird die Form berücksichtigt
+
+-   Rote Karten (`0.9^rk`), Tagesform (`tf`) & Wetter (`wetter`) multiplizieren λ
+
+-   Tore werden **Poisson-verteilt** gezogen → Punkte & Rang je Saison gespeichert
+
+```{r simulation-show}
+#| echo: true
+#| eval: false
+rk_h   <- rpois(n_spiele, 0.159)
+rk_a   <- rpois(n_spiele, 0.159)
+tf_h   <- runif(n_spiele, 0.9, 1.3)
+tf_a   <- runif(n_spiele, 0.8, 1.2)
+roh    <- rnorm(n_spiele, 1, 0.0667)
+wetter <- 1 - abs(round(roh / 0.05) * 0.05 - 1)
+...
+if (l5_count[h] >= 5 && l5_count[a] >= 5) {
+    form_h <- 0.85 + (sum(letzte5[h, ]) / 15) * 0.30
+    form_a <- 0.85 + (sum(letzte5[a, ]) / 15) * 0.30
+  } else {
+      form_h <- 1; form_a <- 1
+  }
+
+lam_h <- (avg_tore[h] + avg_gegentore[a]) / 2 *
+  0.9^rk_h[k] * form_h * wetter[k] * tf_h[k]
+lam_a <- (avg_tore[a] + avg_gegentore[h]) / 2 *
+  0.9^rk_a[k] * form_a * wetter[k] * tf_a[k]
+
+th <- rpois(1, lam_h)   # Tore Heim
+ta <- rpois(1, lam_a)   # Tore Auswärts
+```
+
+## Beispielsaison — Punkteverlauf
+
+```{r}
+punkte_long <- melt(beispiel$punkte_verlauf)
+colnames(punkte_long) <- c("eigenes_spiel", "team", "punkte")
+
+end_order <- teams[order(-beispiel$punkte)]
+punkte_long$team <- factor(punkte_long$team, levels = end_order)
+
+ggplot(punkte_long,
+       aes(x = eigenes_spiel, y = punkte, color = team)) +
+  geom_line(linewidth = 0.9) +
+  scale_x_continuous(breaks = seq(0, 44, by = 4)) +
+  labs(
+    title = "Punkteverlauf einer Beispielsaison",
+    subtitle = "Kumulierte Punkte nach jedem eigenen Spiel (1–44)",
+    x = "Eigene gespielte Spiele",
+    y = "Punkte",
+    color = "Team (Endrang)"
+  ) +
+  theme_minimal()
+```
+
+## Beispielsaison — Endtabelle
+
+```{r}
+end_o <- order(beispiel$rang)
+endtabelle <- data.frame(
+  Pos    = 1:n_teams,
+  Team   = teams[end_o],
+  Punkte = beispiel$punkte[end_o]
+)
+
+ggplot(endtabelle,
+       aes(x = reorder(Team, -Pos), y = Punkte)) +
+  geom_col(fill = "steelblue", width = 0.7) +
+  geom_text(aes(label = paste0(Pos, ". ", Team, " (", Punkte, " Pkt)")),
+            hjust = -0.05, size = 3.5) +
+  coord_flip() +
+  expand_limits(y = max(endtabelle$Punkte) * 1.25) +
+  labs(
+    title = "Endtabelle der Beispielsaison",
+    x = NULL,
+    y = "Punkte"
+  ) +
+  theme_minimal() +
+  theme(axis.text.y = element_blank())
+```
+
+## Durchschnittstabelle (10'000 Saisons)
+
+```{r}
+ggplot(durchschnitt,
+       aes(x = reorder(team, avg_punkte),
+           y = avg_punkte)) +
+  geom_col(fill = "steelblue") +
+  geom_text(aes(label = round(avg_punkte, 1)), hjust = -0.1, size = 3.5) +
+  coord_flip() +
+  expand_limits(y = max(durchschnitt$avg_punkte) * 1.1) +
+  labs(
+    title = "Durchschnittliche Punkte pro Team",
+    subtitle = "Mittelwert über 10'000 simulierte Saisons",
+    x = "Team",
+    y = "Avg Punkte"
+  ) +
+  theme_minimal()
+```
+
+## Wer wird Meister?
+
+```{r}
+df_meister <- data.frame(team = teams, p = meister_wkt)
+
+ggplot(df_meister, aes(x = reorder(team, p), y = p)) +
+  geom_col(fill = "darkgreen") +
+  geom_text(aes(label = paste0(round(p, 1), "%")), hjust = -0.1, size = 3.5) +
+  coord_flip() +
+  expand_limits(y = max(df_meister$p) * 1.15) +
+  labs(
+    title = "P(Meister) pro Team",
+    subtitle = paste0("Basierend auf ", N, " simulierten Saisons"),
+    x = NULL,
+    y = "Wahrscheinlichkeit (%)"
+  ) +
+  theme_minimal()
+```
+
+## Positions-Wahrscheinlichkeiten
+
+```{r}
+pos_long <- reshape(
+  pos_wkt_df,
+  varying = paste0("Pos_", 1:12),
+  v.names = "wahrscheinlichkeit",
+  timevar = "position",
+  times = 1:12,
+  direction = "long"
+)
+
+ggplot(pos_long, aes(x = position,
+                     y = wahrscheinlichkeit,
+                     color = team)) +
+  geom_line(linewidth = 0.8) +
+  scale_x_continuous(breaks = 1:12) +
+  labs(
+    title = "Positions-Wahrscheinlichkeiten pro Team",
+    x = "Tabellenposition",
+    y = "Wahrscheinlichkeit (%)"
+  ) +
+  theme_minimal()
+```
+
+## Abstiegs-Wahrscheinlichkeit
+
+```{r}
+df_abstieg <- data.frame(team = teams, p = abstieg_wkt)
+
+ggplot(df_abstieg, aes(x = reorder(team, p), y = p)) +
+  geom_col(fill = "firebrick") +
+  geom_text(aes(label = paste0(round(p, 1), "%")),
+            hjust = -0.1, size = 3.5) +
+  coord_flip() +
+  expand_limits(y = max(df_abstieg$p) * 1.15) +
+  labs(
+    title = "Wahrscheinlichkeit direkt abzusteigen (Platz 12)",
+    subtitle = paste0("Basierend auf ", N, " simulierten Saisons"),
+    x = NULL,
+    y = "Wahrscheinlichkeit (%)"
+  ) +
+  theme_minimal()
+```
+
+## Fazit
+
+-   Stochastische (= zufallsbasierte) Simulation erlaubt quantitative Aussagen über Saisonverläufe
+
+-   10'000 Simulationen liefern stabile Wahrscheinlichkeiten
+
+-   Trotz Zufallskomponenten spiegelt das Modell die tatsächlichen Kräfteverhältnisse der Liga gut wider
+
+-   Limitationen: 44 statt 38 Spiele (symmetrischer Spielplan statt Liga-Teilung), keine Verletzungen
+
+-   Mögliche Erweiterungen: Verletzungen, korrekter 38-Spiele-Modus, Rote Karte zählt für die nächsten 1–3 Spiele
